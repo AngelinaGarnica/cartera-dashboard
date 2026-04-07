@@ -3,23 +3,26 @@ Dashboard de Seguimiento de Cartera de Deuda
 Créditos Personales / Consumo
 """
 
-import streamlit as st
-import pandas as pd
 import sys
 from pathlib import Path
+
+import streamlit as st
 
 # ─── Setup de rutas ─────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT / "src"))
 
+import pydeck as pdk
+
 from data_loader import (
     cargar_cartera, calcular_kpis, resumen_aging,
-    resumen_por_zona, resumen_por_gestor, distribucion_score, top_deudores
+    resumen_por_zona, resumen_por_gestor, distribucion_score,
+    top_deudores, preparar_geodata,
 )
 from charts import (
     fig_aging_barras, fig_aging_donut, fig_score_histograma,
     fig_score_vs_mora, fig_zona_horizontal, fig_gestores_radar,
-    fig_waterfall_recupero, COLORS
+    fig_waterfall_recupero,
 )
 
 # ─── Configuración de página ─────────────────────────────────────────────────────
@@ -263,16 +266,27 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-    zonas_opts = ["Todas"] + sorted(df_raw["zona"].unique().tolist())
-    zona_sel = st.selectbox("Zona geográfica", zonas_opts)
+    zonas_opts = ["Todas"] + sorted(df_raw["barrio"].unique().tolist())
+    zona_sel = st.selectbox("Barrio", zonas_opts)
 
     gestores_opts = ["Todos"] + sorted(df_raw["gestor"].unique().tolist())
     gestor_sel = st.selectbox("Gestor", gestores_opts)
 
     estados_opts = df_raw["estado_credito"].cat.categories.tolist()
-    estados_sel = st.multiselect("Estado", estados_opts, default=estados_opts)
+    estados_sel = st.multiselect("Estado deuda", estados_opts, default=estados_opts)
 
-    score_range = st.slider("Score de riesgo", 300, 950, (300, 950), step=25)
+    score_range = st.slider("Score de riesgo", 1, 99, (1, 99), step=1)
+
+    st.markdown("---")
+
+    edif_opts = sorted(df_raw["Estado"].dropna().unique().tolist())
+    edif_sel = st.multiselect("Edificación", edif_opts, default=edif_opts)
+
+    tipo_opts = sorted(df_raw["Tipo_Parce"].dropna().unique().tolist())
+    tipo_sel = st.multiselect("Tipo de parcela", tipo_opts, default=tipo_opts)
+
+    perfil_opts = sorted(df_raw["Categoria_perfil"].dropna().unique().tolist())
+    perfil_sel = st.multiselect("Perfil crediticio", perfil_opts, default=perfil_opts)
 
     st.markdown("---")
     st.markdown("""
@@ -291,12 +305,18 @@ with st.sidebar:
 # ─── Aplicar filtros ─────────────────────────────────────────────────────────────
 df = df_raw.copy()
 if zona_sel != "Todas":
-    df = df[df["zona"] == zona_sel]
+    df = df[df["barrio"] == zona_sel]
 if gestor_sel != "Todos":
     df = df[df["gestor"] == gestor_sel]
 if estados_sel:
     df = df[df["estado_credito"].isin(estados_sel)]
 df = df[(df["score_riesgo"] >= score_range[0]) & (df["score_riesgo"] <= score_range[1])]
+if edif_sel:
+    df = df[df["Estado"].isin(edif_sel)]
+if tipo_sel:
+    df = df[df["Tipo_Parce"].isin(tipo_sel)]
+if perfil_sel:
+    df = df[df["Categoria_perfil"].isin(perfil_sel)]
 
 
 # ─── Header ─────────────────────────────────────────────────────────────────────
@@ -320,7 +340,7 @@ if kpis["ratio_mora_saldo"] > 0.35:
 if kpis["tasa_recupero"] < 0.10:
     alertas.append(("orange", f"⚡ Tasa de recupero baja: {kpis['tasa_recupero']:.1%} — revisar gestión de cobranza"))
 if kpis["pct_alto_riesgo"] > 0.20:
-    alertas.append(("orange", f"🔴 {kpis['pct_alto_riesgo']:.1%} de la cartera con score < 500 (alto riesgo)"))
+    alertas.append(("orange", f"🔴 {kpis['pct_alto_riesgo']:.1%} de la cartera con score < 40 (alto riesgo)"))
 
 if alertas:
     with st.expander(f"⚠ {len(alertas)} alerta(s) activa(s)", expanded=True):
@@ -363,8 +383,8 @@ for col, (color, icon, label, value, sub) in zip(cols, kpi_data):
 
 # ─── Tabs principales ────────────────────────────────────────────────────────────
 st.markdown("")
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📊 Mora & Aging", "🎯 Score de Riesgo", "🗺 Zonas", "👥 Gestores", "📋 Deudores"
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "📊 Mora & Aging", "🎯 Score de Riesgo", "🗺 Zonas", "👥 Gestores", "📋 Deudores", "🗺 Mapa",
 ])
 
 
@@ -475,15 +495,14 @@ with tab5:
     def color_estado(val):
         colores = {
             "Vigente": "color: #3FB950",
-            "Mora Temprana": "color: #D29922",
-            "Mora Avanzada": "color: #F85149",
-            "Incobrable": "color: #8B0000",
+            "En mora": "color: #F85149",
+            "En gestión judicial": "color: #8B0000",
         }
         return colores.get(val, "")
 
     df_top_show = df_top.copy()
     df_top_show["saldo_total"] = df_top_show["saldo_total"].apply(lambda x: f"${x:,.0f}")
-    df_top_show.columns = ["ID", "Cliente", "Zona", "Saldo Total", "Días Mora", "Bucket", "Score", "Estado", "Gestor"]
+    df_top_show.columns = ["ID", "Cliente", "Barrio", "Saldo Total", "Días Mora", "Bucket", "Score", "Estado", "Gestor"]
 
     st.dataframe(
         df_top_show,
@@ -491,7 +510,7 @@ with tab5:
         hide_index=True,
         column_config={
             "Score": st.column_config.ProgressColumn(
-                "Score", min_value=300, max_value=950, format="%d"
+                "Score", min_value=1, max_value=99, format="%d"
             ),
             "Días Mora": st.column_config.NumberColumn("Días Mora", format="%d días"),
         }
@@ -505,6 +524,136 @@ with tab5:
         file_name="top_deudores.csv",
         mime="text/csv",
     )
+
+
+# ── TAB 6: Mapa de polígonos ─────────────────────────────────────────────────────
+with tab6:
+    st.markdown('<div class="section-title">Mapa de Unidades por Bucket de Mora</div>',
+                unsafe_allow_html=True)
+
+    with st.spinner("Preparando geometrías..."):
+        features = preparar_geodata(df)
+
+    n_geo = len(features)
+    n_total = len(df)
+    st.markdown(
+        f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;'
+        f'color:#7D8590;margin-bottom:12px;">'
+        f'{n_geo:,} unidades con geometría de {n_total:,} totales</div>',
+        unsafe_allow_html=True,
+    )
+
+    if features:
+        layer = pdk.Layer(
+            "GeoJsonLayer",
+            data=features,
+            pickable=True,
+            stroked=True,
+            filled=True,
+            get_fill_color="properties.fill_color",
+            get_line_color=[255, 255, 255, 60],
+            line_width_min_pixels=1,
+        )
+
+        all_lons = [c[0] for f in features for c in f["geometry"]["coordinates"][0]]
+        all_lats = [c[1] for f in features for c in f["geometry"]["coordinates"][0]]
+        center_lon = sum(all_lons) / len(all_lons)
+        center_lat = sum(all_lats) / len(all_lats)
+
+        view = pdk.ViewState(
+            longitude=center_lon,
+            latitude=center_lat,
+            zoom=14,
+            pitch=30,
+        )
+
+        tooltip = {
+            "html": (
+                "<div style='font-family:IBM Plex Mono,monospace;font-size:12px;"
+                "background:#161B22;color:#E6EDF3;padding:10px;border-radius:6px;"
+                "border:1px solid #21262D;'>"
+                "<b>{direccion}</b><br>"
+                "Barrio: {barrio}<br>"
+                "Bucket: {bucket}<br>"
+                "Días mora: {dias_mora}<br>"
+                "Saldo: ${saldo_total}<br>"
+                "Estado: {estado}<br>"
+                "Score: {score}<br>"
+                "Gestor: {gestor}"
+                "</div>"
+            ),
+            "style": {"backgroundColor": "transparent", "color": "white"},
+        }
+
+        deck = pdk.Deck(
+            layers=[layer],
+            initial_view_state=view,
+            tooltip=tooltip,
+            map_style="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+        )
+
+        leyenda_html = """
+        <div style="
+            position:absolute; bottom:32px; left:16px; z-index:9999;
+            background:rgba(22,27,34,0.92);
+            border:1px solid #21262D;
+            border-radius:8px;
+            padding:12px 16px;
+            font-family:'IBM Plex Mono',monospace;
+        ">
+            <div style="font-size:10px;color:#7D8590;text-transform:uppercase;
+                        letter-spacing:0.1em;margin-bottom:8px;">Mora</div>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;">
+                <div style="width:12px;height:12px;border-radius:2px;background:#3FB950;flex-shrink:0;"></div>
+                <span style="font-size:11px;color:#E6EDF3;">Al día</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;">
+                <div style="width:12px;height:12px;border-radius:2px;background:#D29922;flex-shrink:0;"></div>
+                <span style="font-size:11px;color:#E6EDF3;">1-30 días</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;">
+                <div style="width:12px;height:12px;border-radius:2px;background:#F0883E;flex-shrink:0;"></div>
+                <span style="font-size:11px;color:#E6EDF3;">31-60 días</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;">
+                <div style="width:12px;height:12px;border-radius:2px;background:#F85149;flex-shrink:0;"></div>
+                <span style="font-size:11px;color:#E6EDF3;">61-90 días</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;">
+                <div style="width:12px;height:12px;border-radius:2px;background:#CF222E;flex-shrink:0;"></div>
+                <span style="font-size:11px;color:#E6EDF3;">91-180 días</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <div style="width:12px;height:12px;border-radius:2px;background:#8B0000;flex-shrink:0;"></div>
+                <span style="font-size:11px;color:#E6EDF3;">+180 días</span>
+            </div>
+        </div>
+        """
+
+        fullscreen_btn = """
+        <button onclick="
+            var el = document.documentElement;
+            if (!document.fullscreenElement) { el.requestFullscreen(); }
+            else { document.exitFullscreen(); }
+        " style="
+            position:absolute; top:12px; right:12px; z-index:9999;
+            background:rgba(22,27,34,0.92); border:1px solid #21262D;
+            border-radius:6px; color:#E6EDF3; cursor:pointer;
+            font-size:16px; width:32px; height:32px;
+            display:flex; align-items:center; justify-content:center;
+        " title="Pantalla completa">⛶</button>
+        """
+
+        deck_html = deck.to_html(as_string=True)
+        deck_html = deck_html.replace(
+            "<body>",
+            f"<body>{leyenda_html}{fullscreen_btn}",
+        )
+
+        import streamlit.components.v1 as components
+        components.html(deck_html, height=620)
+    else:
+        st.warning("No hay geometrías disponibles para el filtro seleccionado.")
 
 
 # ─── Footer ──────────────────────────────────────────────────────────────────────

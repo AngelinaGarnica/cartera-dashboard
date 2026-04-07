@@ -25,12 +25,12 @@ COLORS = {
 }
 
 BUCKET_COLORS = {
-    "Al día":       "#3FB950",
-    "1-30 días":    "#D29922",
-    "31-60 días":   "#F0883E",
-    "61-90 días":   "#F85149",
-    "91-180 días":  "#CF222E",
-    "+180 días":    "#8B0000",
+    "Al día":        "#3FB950",
+    "1-30 días":     "#D29922",
+    "31-60 días":    "#F0883E",
+    "61-90 días":    "#F85149",
+    "91-180 días":   "#CF222E",
+    "+180 días":     "#8B0000",
 }
 
 LAYOUT_BASE = dict(
@@ -142,9 +142,8 @@ def fig_score_vs_mora(df: pd.DataFrame) -> go.Figure:
     sample = df.sample(min(300, len(df)), random_state=42)
     color_map = {
         "Vigente": COLORS["accent2"],
-        "Mora Temprana": COLORS["warning"],
-        "Mora Avanzada": COLORS["danger"],
-        "Incobrable": "#8B0000",
+        "En mora": COLORS["warning"],
+        "En gestión judicial": "#8B0000",
     }
     fig = go.Figure()
     for estado, color in color_map.items():
